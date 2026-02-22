@@ -2,11 +2,11 @@ from fastapi import FastAPI
 import pickle
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
-import os
+import uvicorn
 
 app = FastAPI()
 
-# Enable CORS so your React app (Port 3000) can talk to this API (Port 8000)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,12 +15,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the trained model
-# Ensure 'traffic_model.pkl' is in the same folder as this script
-try:
-    model = pickle.load(open("traffic_model.pkl", "rb"))
-except Exception as e:
-    print(f"Error loading model: {e}")
+
+model = None
+
+@app.on_event("startup")
+def load_model():
+    global model
+    try:
+        with open("traffic_model.pkl", "rb") as f:
+            model = pickle.load(f)
+        print(" Model loaded ")
+    except Exception as e:
+        print(f" Error: {e}")
 
 @app.get("/predict/{junction_id}/{hour}")
 def predict(junction_id: str, hour: int):
@@ -28,33 +34,56 @@ def predict(junction_id: str, hour: int):
         file_path = f"junction_{junction_id.upper()}.csv"
         df = pd.read_csv(file_path)
         
-        # Calculate averages from your dataset (1-39s)
-        avg_row = df.mean(numeric_only=True)
+        
+        
+        hourly_data = df[df['time_sec'] == hour]
 
-        # Features: [hour, car, bike, bus, truck, total]
-        features = [[
-            hour, 
-            avg_row.get("car", 0),
-            avg_row.get("bike", 0),
-            avg_row.get("bus", 0),
-            avg_row.get("truck", 0),
-            avg_row.get("total", 0)
-        ]]
+        if hourly_data.empty:
+            
+            avg_row = df.mean(numeric_only=True)
+        else:
+            avg_row = hourly_data.mean(numeric_only=True)
 
-        # The model returns a label like "Medium"
-        prediction = model.predict(features)[0]
+        
+        feature_dict = {
+            "hour": [hour],
+            "car": [int(avg_row.get("car", 0))],
+            "bike": [int(avg_row.get("bike", 0))],
+            "bus": [int(avg_row.get("bus", 0))],
+            "truck": [int(avg_row.get("truck", 0))],
+            "total": [int(avg_row.get("total", 0))]
+        }
+        features_df = pd.DataFrame(feature_dict)
+        
+        if model is None:
+            return {"error": "Model not loaded", "congestion": "Error"}
+
+        prediction = model.predict(features_df)[0]
 
         return {
-            "congestion": str(prediction), # Pass the word "Medium" to React
+            "congestion": str(prediction), 
             "expected_cars": int(avg_row.get("car", 0)),
             "expected_bikes": int(avg_row.get("bike", 0)),
             "expected_buses": int(avg_row.get("bus", 0)),
             "expected_trucks": int(avg_row.get("truck", 0))
         }
     except Exception as e:
+        print(f"Prediction Error: {e}")
+        return {"error": str(e), "congestion": "Error"}
+            
+        prediction = model.predict(features_df)[0]
+
+       
+        return {
+            "congestion": str(prediction), 
+            "expected_cars": int(avg_row.get("car", 0)),
+            "expected_bikes": int(avg_row.get("bike", 0)),
+            "expected_buses": int(avg_row.get("bus", 0)),
+            "expected_trucks": int(avg_row.get("truck", 0))
+        }
+    except Exception as e:
+        print(f"Prediction Error: {e}")
         return {"error": str(e), "congestion": "Error"}
 
 if __name__ == "__main__":
-    import uvicorn
-    # Start the server on port 8000
     uvicorn.run(app, host="127.0.0.1", port=8000)
